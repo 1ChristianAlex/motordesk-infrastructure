@@ -1,0 +1,176 @@
+name: Deploy EKS Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: AWS environment to deploy
+        required: true
+        type: choice
+        options:
+          - dev
+          - qa
+          - prod
+      confirm_apply:
+        description: Apply the reviewed AWS plan and deploy Kubernetes manifests
+        required: true
+        default: false
+        type: boolean
+      confirm_data_cutover:
+        description: Confirm an EFS recovery point and approved maintenance window
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eks-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_TF_BACKEND_BUCKET: ${{ vars.AWS_TF_BACKEND_BUCKET }}
+      API_DOMAIN_NAME: ${{ vars.API_DOMAIN_NAME }}
+      ROUTE53_ZONE_ID: ${{ vars.ROUTE53_ZONE_ID }}
+      TF_VAR_ses_from_address: ${{ vars.SES_FROM_ADDRESS }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      AWS_TF_ROOT: infra/terraform/aws/envs/${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.35.0
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Validate deployment configuration
+        shell: bash
+        env:
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+          NEW_RELIC_EKS_LICENSE_KEY: ${{ secrets.NEW_RELIC_EKS_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          for tool in aws docker terraform kubectl helm envsubst curl; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is required on the GitHub-hosted runner."; exit 1; }
+          done
+          test -n "$AWS_REGION" || { echo "::error::Set AWS_REGION in the GitHub Environment."; exit 1; }
+          test -n "$AWS_TF_BACKEND_BUCKET" || { echo "::error::Set AWS_TF_BACKEND_BUCKET in the GitHub Environment."; exit 1; }
+          test -n "$NEW_RELIC_LICENSE_KEY" || { echo "::error::Set NEW_RELIC_LICENSE_KEY as a GitHub Environment secret."; exit 1; }
+          test -n "$NEW_RELIC_EKS_LICENSE_KEY" || { echo "::error::Set NEW_RELIC_EKS_LICENSE_KEY as a GitHub Environment or repository secret."; exit 1; }
+          if [[ "${{ inputs.confirm_apply }}" == "true" && "${{ inputs.confirm_data_cutover }}" != "true" ]]; then
+            echo "::error::Confirm an EFS recovery point and maintenance window before deploying."
+            exit 1
+          fi
+
+      - name: Configure Terraform credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Plan AWS infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$AWS_TF_ROOT" init -input=false \
+            -backend-config="bucket=$AWS_TF_BACKEND_BUCKET" \
+            -backend-config="region=$AWS_REGION"
+          terraform -chdir="$AWS_TF_ROOT" plan -input=false -no-color -out=infra.tfplan \
+            -var="aws_region=$AWS_REGION" \
+            -var="terraform_state_bucket=$AWS_TF_BACKEND_BUCKET" \
+            -var="api_domain_name=$API_DOMAIN_NAME" \
+            -var="route53_zone_id=$ROUTE53_ZONE_ID"
+          terraform -chdir="$AWS_TF_ROOT" show -no-color infra.tfplan
+
+      - name: Apply AWS infrastructure
+        if: inputs.confirm_apply
+        shell: bash
+        run: terraform -chdir="$AWS_TF_ROOT" apply -input=false -auto-approve infra.tfplan
+
+      - name: Export infrastructure outputs
+        if: inputs.confirm_apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r output variable; do
+            value=$(terraform -chdir="$AWS_TF_ROOT" output -raw "$output")
+            printf '%s=%s\n' "$variable" "$value" >> "$GITHUB_ENV"
+          done <<'OUTPUTS'
+          ecr_repository_url ECR_REPOSITORY_URL
+          eks_cluster_name EKS_CLUSTER_NAME
+          eks_cluster_version EKS_KUBERNETES_VERSION
+          eks_vpc_id EKS_VPC_ID
+          api_domain_name API_DOMAIN_NAME
+          api_certificate_arn API_CERTIFICATE_ARN
+          api_waf_web_acl_arn WAF_WEB_ACL_ARN
+          efs_file_system_id EFS_FILE_SYSTEM_ID
+          efs_access_point_id EFS_ACCESS_POINT_ID
+          postgres_secret_arn POSTGRES_SECRET_ARN
+          redis_auth_token_secret_arn REDIS_SECRET_ARN
+          jwt_secret_arn JWT_SECRET_ARN
+          mongo_credentials_secret_arn MONGO_SECRET_ARN
+          mongo_options MONGO_OPTIONS
+          parameter_store_prefix PARAMETER_STORE_PREFIX
+          OUTPUTS
+          printf 'IMAGE_TAG=%s\n' "$GITHUB_SHA" >> "$GITHUB_ENV"
+
+      - name: Configure EKS deployment credentials
+        if: inputs.confirm_apply
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and push immutable API image
+        if: inputs.confirm_apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="${ECR_REPOSITORY_URL%%/*}"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$registry"
+          docker build --file infra/docker/Dockerfile --tag "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
+          docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+
+      - name: Configure EKS access from this runner
+        if: inputs.confirm_apply
+        shell: bash
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Install cluster add-ons with Helm
+        if: inputs.confirm_apply
+        shell: bash
+        run: bash infra/kubernetes/helm/install-addons.sh
+
+      - name: Install New Relic Kubernetes observability
+        if: inputs.confirm_apply
+        shell: bash
+        env:
+          NEW_RELIC_EKS_LICENSE_KEY: ${{ secrets.NEW_RELIC_EKS_LICENSE_KEY }}
+        run: bash infra/kubernetes/helm/install-newrelic.sh
+
+      - name: Apply Kubernetes YAML workloads
+        if: inputs.confirm_apply
+        shell: bash
+        env:
+          NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+        run: bash infra/kubernetes/deploy-workloads.sh

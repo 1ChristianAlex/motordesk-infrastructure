@@ -1,0 +1,96 @@
+name: Terraform AWS Validation
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - "infra/kubernetes/**"
+      - ".github/scripts/**"
+      - ".github/workflows/deploy-eks.yml"
+      - ".github/workflows/terraform-aws.yml"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "infra/terraform/**"
+      - "infra/kubernetes/**"
+      - ".github/scripts/**"
+      - ".github/workflows/deploy-eks.yml"
+      - ".github/workflows/terraform-aws.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-aws:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, qa, prod]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.0
+
+      - name: Terraform Format
+        working-directory: infra/terraform/aws
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        working-directory: infra/terraform/aws/envs/${{ matrix.environment }}
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform Validate
+        working-directory: infra/terraform/aws/envs/${{ matrix.environment }}
+        run: terraform validate -no-color
+
+  validate-kubernetes-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Validate Kubernetes YAML and deployment scripts
+        run: |
+          bun .github/scripts/validate-kubernetes-yaml.js
+          bash -n infra/kubernetes/deploy-workloads.sh
+          bash -n infra/kubernetes/helm/install-addons.sh
+          bash -n infra/kubernetes/helm/install-newrelic.sh
+
+      - name: Lint and render New Relic Helm chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          source infra/kubernetes/helm/versions.env
+          helm repo add newrelic https://helm-charts.newrelic.com
+          helm repo update newrelic
+          helm pull newrelic/nri-bundle \
+            --version "$NEW_RELIC_NRI_BUNDLE_CHART_VERSION" \
+            --destination "$RUNNER_TEMP"
+          bundle_chart="$RUNNER_TEMP/nri-bundle-$NEW_RELIC_NRI_BUNDLE_CHART_VERSION.tgz"
+          helm lint "$bundle_chart" \
+            --namespace newrelic \
+            --values infra/kubernetes/newrelic/values.yaml \
+            --set-string global.cluster=validation-cluster
+          helm template newrelic-kubernetes "$bundle_chart" \
+            --namespace newrelic \
+            --values infra/kubernetes/newrelic/values.yaml \
+            --set-string global.cluster=validation-cluster \
+            > "$RUNNER_TEMP/newrelic-kubernetes.yaml"
+          grep -q 'newrelic-license' "$RUNNER_TEMP/newrelic-kubernetes.yaml"
