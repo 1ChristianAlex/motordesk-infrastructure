@@ -141,16 +141,6 @@ jobs:
             exit 1
           }
 
-          test -n "$API_DOMAIN_NAME" || {
-            echo "::error::API_DOMAIN_NAME is required."
-            exit 1
-          }
-
-          test -n "$ROUTE53_ZONE_ID" || {
-            echo "::error::ROUTE53_ZONE_ID is required."
-            exit 1
-          }
-
           test -n "$NEW_RELIC_LICENSE_KEY" || {
             echo "::error::NEW_RELIC_LICENSE_KEY is required."
             exit 1
