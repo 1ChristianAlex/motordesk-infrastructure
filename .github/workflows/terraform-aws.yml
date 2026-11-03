@@ -1,23 +1,32 @@
+
 name: Terraform AWS Validation
 
 on:
-  pull_request:
-    paths:
-      - "infra/terraform/**"
-      - "infra/kubernetes/**"
-      - ".github/scripts/**"
-      - ".github/workflows/deploy-eks.yml"
-      - ".github/workflows/terraform-aws.yml"
-  push:
-    branches:
-      - dev
-      - main
-    paths:
-      - "infra/terraform/**"
-      - "infra/kubernetes/**"
-      - ".github/scripts/**"
-      - ".github/workflows/deploy-eks.yml"
-      - ".github/workflows/terraform-aws.yml"
+  workflow_call:
+    inputs:
+      environments:
+        description: Environments to validate
+        required: false
+        type: string
+        default: '["dev", "qa", "prod"]'
+
+      terraform_version:
+        description: Terraform CLI version
+        required: false
+        type: string
+        default: "1.10.0"
+
+      bun_version:
+        description: Bun runtime version
+        required: false
+        type: string
+        default: "latest"
+
+      helm_version:
+        description: Helm CLI version
+        required: false
+        type: string
+        default: "v3.16.4"
 
 permissions:
   contents: read
@@ -28,7 +37,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        environment: [dev, qa, prod]
+        environment: ${{ fromJSON(inputs.environments) }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,7 +46,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.0
+          terraform_version: ${{ inputs.terraform_version }}
 
       - name: Terraform Format
         working-directory: infra/terraform/aws
@@ -59,12 +69,12 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: ${{ inputs.bun_version }}
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
         with:
-          version: v3.16.4
+          version: ${{ inputs.helm_version }}
 
       - name: Validate Kubernetes YAML and deployment scripts
         run: |
@@ -77,20 +87,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           source infra/kubernetes/helm/versions.env
+
           helm repo add newrelic https://helm-charts.newrelic.com
           helm repo update newrelic
+
           helm pull newrelic/nri-bundle \
             --version "$NEW_RELIC_NRI_BUNDLE_CHART_VERSION" \
             --destination "$RUNNER_TEMP"
+
           bundle_chart="$RUNNER_TEMP/nri-bundle-$NEW_RELIC_NRI_BUNDLE_CHART_VERSION.tgz"
+
           helm lint "$bundle_chart" \
             --namespace newrelic \
             --values infra/kubernetes/newrelic/values.yaml \
             --set-string global.cluster=validation-cluster
+
           helm template newrelic-kubernetes "$bundle_chart" \
             --namespace newrelic \
             --values infra/kubernetes/newrelic/values.yaml \
             --set-string global.cluster=validation-cluster \
             > "$RUNNER_TEMP/newrelic-kubernetes.yaml"
+
           grep -q 'newrelic-license' "$RUNNER_TEMP/newrelic-kubernetes.yaml"

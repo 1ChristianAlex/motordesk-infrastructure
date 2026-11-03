@@ -1,26 +1,65 @@
 name: Deploy EKS Runtime
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       environment:
         description: AWS environment to deploy
         required: true
-        type: choice
-        options:
-          - dev
-          - qa
-          - prod
+        type: string
+
       confirm_apply:
         description: Apply the reviewed AWS plan and deploy Kubernetes manifests
-        required: true
+        required: false
         default: false
         type: boolean
+
       confirm_data_cutover:
         description: Confirm an EFS recovery point and approved maintenance window
-        required: true
+        required: false
         default: false
         type: boolean
+
+      aws_region:
+        description: AWS region
+        required: true
+        type: string
+
+      aws_tf_backend_bucket:
+        description: Terraform state backend bucket
+        required: true
+        type: string
+
+      api_domain_name:
+        description: API domain name
+        required: true
+        type: string
+
+      route53_zone_id:
+        description: Route53 hosted zone ID
+        required: true
+        type: string
+
+      ses_from_address:
+        description: SES sender email address
+        required: true
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        description: AWS access key ID
+        required: true
+
+      AWS_SECRET_ACCESS_KEY:
+        description: AWS secret access key
+        required: true
+
+      NEW_RELIC_LICENSE_KEY:
+        description: New Relic license key
+        required: true
+
+      NEW_RELIC_EKS_LICENSE_KEY:
+        description: New Relic Kubernetes license key
+        required: true
 
 permissions:
   contents: read
@@ -33,14 +72,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+
     env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_TF_BACKEND_BUCKET: ${{ vars.AWS_TF_BACKEND_BUCKET }}
-      API_DOMAIN_NAME: ${{ vars.API_DOMAIN_NAME }}
-      ROUTE53_ZONE_ID: ${{ vars.ROUTE53_ZONE_ID }}
-      TF_VAR_ses_from_address: ${{ vars.SES_FROM_ADDRESS }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      AWS_TF_BACKEND_BUCKET: ${{ inputs.aws_tf_backend_bucket }}
+      API_DOMAIN_NAME: ${{ inputs.api_domain_name }}
+      ROUTE53_ZONE_ID: ${{ inputs.route53_zone_id }}
+      TF_VAR_ses_from_address: ${{ inputs.ses_from_address }}
       ENVIRONMENT: ${{ inputs.environment }}
       AWS_TF_ROOT: infra/terraform/aws/envs/${{ inputs.environment }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,13 +108,52 @@ jobs:
           NEW_RELIC_EKS_LICENSE_KEY: ${{ secrets.NEW_RELIC_EKS_LICENSE_KEY }}
         run: |
           set -euo pipefail
+
           for tool in aws docker terraform kubectl helm envsubst curl; do
-            command -v "$tool" >/dev/null || { echo "::error::$tool is required on the GitHub-hosted runner."; exit 1; }
+            command -v "$tool" >/dev/null || {
+              echo "::error::$tool is required on the GitHub-hosted runner."
+              exit 1
+            }
           done
-          test -n "$AWS_REGION" || { echo "::error::Set AWS_REGION in the GitHub Environment."; exit 1; }
-          test -n "$AWS_TF_BACKEND_BUCKET" || { echo "::error::Set AWS_TF_BACKEND_BUCKET in the GitHub Environment."; exit 1; }
-          test -n "$NEW_RELIC_LICENSE_KEY" || { echo "::error::Set NEW_RELIC_LICENSE_KEY as a GitHub Environment secret."; exit 1; }
-          test -n "$NEW_RELIC_EKS_LICENSE_KEY" || { echo "::error::Set NEW_RELIC_EKS_LICENSE_KEY as a GitHub Environment or repository secret."; exit 1; }
+
+          case "$ENVIRONMENT" in
+            dev|qa|prod) ;;
+            *)
+              echo "::error::Invalid environment. Allowed values: dev, qa, prod."
+              exit 1
+              ;;
+          esac
+
+          test -n "$AWS_REGION" || {
+            echo "::error::AWS_REGION is required."
+            exit 1
+          }
+
+          test -n "$AWS_TF_BACKEND_BUCKET" || {
+            echo "::error::AWS_TF_BACKEND_BUCKET is required."
+            exit 1
+          }
+
+          test -n "$API_DOMAIN_NAME" || {
+            echo "::error::API_DOMAIN_NAME is required."
+            exit 1
+          }
+
+          test -n "$ROUTE53_ZONE_ID" || {
+            echo "::error::ROUTE53_ZONE_ID is required."
+            exit 1
+          }
+
+          test -n "$NEW_RELIC_LICENSE_KEY" || {
+            echo "::error::NEW_RELIC_LICENSE_KEY is required."
+            exit 1
+          }
+
+          test -n "$NEW_RELIC_EKS_LICENSE_KEY" || {
+            echo "::error::NEW_RELIC_EKS_LICENSE_KEY is required."
+            exit 1
+          }
+
           if [[ "${{ inputs.confirm_apply }}" == "true" && "${{ inputs.confirm_data_cutover }}" != "true" ]]; then
             echo "::error::Confirm an EFS recovery point and maintenance window before deploying."
             exit 1
@@ -90,14 +170,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           terraform -chdir="$AWS_TF_ROOT" init -input=false \
             -backend-config="bucket=$AWS_TF_BACKEND_BUCKET" \
             -backend-config="region=$AWS_REGION"
+
           terraform -chdir="$AWS_TF_ROOT" plan -input=false -no-color -out=infra.tfplan \
             -var="aws_region=$AWS_REGION" \
             -var="terraform_state_bucket=$AWS_TF_BACKEND_BUCKET" \
             -var="api_domain_name=$API_DOMAIN_NAME" \
             -var="route53_zone_id=$ROUTE53_ZONE_ID"
+
           terraform -chdir="$AWS_TF_ROOT" show -no-color infra.tfplan
 
       - name: Apply AWS infrastructure
@@ -110,6 +193,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           while read -r output variable; do
             value=$(terraform -chdir="$AWS_TF_ROOT" output -raw "$output")
             printf '%s=%s\n' "$variable" "$value" >> "$GITHUB_ENV"
@@ -130,6 +214,7 @@ jobs:
           mongo_options MONGO_OPTIONS
           parameter_store_prefix PARAMETER_STORE_PREFIX
           OUTPUTS
+
           printf 'IMAGE_TAG=%s\n' "$GITHUB_SHA" >> "$GITHUB_ENV"
 
       - name: Configure EKS deployment credentials
@@ -145,9 +230,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           registry="${ECR_REPOSITORY_URL%%/*}"
+
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$registry"
+
           docker build --file infra/docker/Dockerfile --tag "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
           docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
 
