@@ -32,12 +32,12 @@ on:
 
       api_domain_name:
         description: API domain name
-        required: true
+        required: false
         type: string
 
       route53_zone_id:
         description: Route53 hosted zone ID
-        required: true
+        required: false
         type: string
 
       ses_from_address:
