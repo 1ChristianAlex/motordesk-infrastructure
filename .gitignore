@@ -1,0 +1,92 @@
+# Gradle
+.gradle/
+/build/
+/out/
+
+# Gradle wrapper JAR should be committed; do not ignore gradle/wrapper/
+
+# Kotlin/IntelliJ
+*.iml
+.idea/
+*.ipr
+*.iws
+
+# VS Code
+.vscode/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables / secrets
+.env
+.env.*
+local.properties
+secrets.properties
+
+# JVM
+*.class
+*.war
+*.ear
+hs_err_pid*
+
+# Kotlin/Java build directories
+**/build/
+**/out/
+
+# Test output
+test-results/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Docker
+**/docker-compose.override.yml
+docker-compose.override.yml
+
+# IDE specific
+.classpath
+.project
+.settings/
+
+# Keystore and credentials
+*.jks
+*.keystore
+
+# JetBrains caches
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/shelf
+.idea/**/dictionaries
+
+# Coverage
+coverage/
+*.coverage
+
+# Package managers
+node_modules/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+crash.log
+crash.*.log
+
+# Generated Gradle files
+buildSrc/build/
+
+# Keep this file tracked
+!/.gitignore
+
+infra/terraform/azure/az-secrets.json
+infra/terraform/secret-cookbook.md

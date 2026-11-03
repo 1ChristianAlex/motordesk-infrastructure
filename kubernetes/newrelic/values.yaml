@@ -1,0 +1,77 @@
+newrelic-infrastructure:
+  enabled: true
+  common:
+    config:
+      disableCloudClusterIdDetection: true
+  controlPlane:
+    enabled: false
+  kubelet:
+    enabled: true
+  ksm:
+    enabled: true
+    ksm:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+    forwarder:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+
+nri-prometheus:
+  enabled: false
+
+nri-metadata-injection:
+  enabled: false
+
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  metricLabelsAllowlist:
+    - "pods=[app.kubernetes.io/name]"
+    - "namespaces=[kubernetes.io/metadata.name]"
+    - "deployments=[app.kubernetes.io/name]"
+  metricAnnotationsAllowList: []
+
+nri-kube-events:
+  enabled: true
+  scrapers:
+    descriptions:
+      enabled: false
+    events:
+      enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  forwarder:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+newrelic-logging:
+  enabled: false
+
+global:
+  customSecretName: newrelic-license
+  customSecretLicenseKey: license-key
+  lowDataMode: true
+  fargate: false

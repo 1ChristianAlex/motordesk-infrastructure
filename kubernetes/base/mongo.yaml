@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: motordesk
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-headless
+  namespace: motordesk
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: motordesk
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  serviceName: mongo-headless
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        cloudwatch.aws.amazon.com/auto-annotate-nodejs: "false"
+        cloudwatch.aws.amazon.com/auto-annotate-python: "false"
+        cloudwatch.aws.amazon.com/auto-annotate-dotnet: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
+        instrumentation.opentelemetry.io/inject-nodejs: "false"
+        instrumentation.opentelemetry.io/inject-python: "false"
+        instrumentation.opentelemetry.io/inject-dotnet: "false"
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: mongo
+          image: mongo:8.0.34
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mongodb
+              containerPort: 27017
+              protocol: TCP
+          env:
+            - name: MONGO_INITDB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-parameters
+                  key: MONGO_DATABASE
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-runtime
+                  key: MONGO_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-runtime
+                  key: MONGO_ROOT_PASSWORD
+          startupProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - db.adminCommand('ping').ok
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - db.adminCommand('ping').ok
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - db.adminCommand('ping').ok
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+        - name: mongo-user-init
+          image: mongo:8.0.34
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+          args:
+            - |
+              set -e
+              until mongosh --quiet --host 127.0.0.1 --port 27017 \
+                --username "$MONGO_ROOT_USERNAME" \
+                --password "$MONGO_ROOT_PASSWORD" \
+                --authenticationDatabase admin \
+                --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1; do
+                sleep 2
+              done
+              mongosh --quiet --host 127.0.0.1 --port 27017 \
+                --username "$MONGO_ROOT_USERNAME" \
+                --password "$MONGO_ROOT_PASSWORD" \
+                --authenticationDatabase admin \
+                --eval 'const authDb = db.getSiblingDB("admin"); const user = process.env.MONGO_APP_USERNAME; const options = { pwd: process.env.MONGO_APP_PASSWORD, roles: [{ role: "readWrite", db: process.env.MONGO_DATABASE }] }; if (authDb.getUser(user)) authDb.updateUser(user, options); else authDb.createUser({ user, ...options });'
+              exec sleep infinity
+          env:
+            - name: MONGO_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-parameters
+                  key: MONGO_DATABASE
+            - name: MONGO_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-runtime
+                  key: MONGO_ROOT_USERNAME
+            - name: MONGO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-runtime
+                  key: MONGO_ROOT_PASSWORD
+            - name: MONGO_APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-runtime
+                  key: MONGO_USER
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: motordesk-runtime
+                  key: MONGO_PASSWORD
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: ""
+        volumeName: mongo-efs-pv
+        resources:
+          requests:
+            storage: 10Gi
