@@ -80,11 +80,18 @@ jobs:
       ROUTE53_ZONE_ID: ${{ inputs.route53_zone_id }}
       TF_VAR_ses_from_address: ${{ inputs.ses_from_address }}
       ENVIRONMENT: ${{ inputs.environment }}
-      AWS_TF_ROOT: infra/terraform/aws/envs/${{ inputs.environment }}
+      AWS_TF_ROOT: infrastructure/terraform/aws/envs/${{ inputs.environment }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Checkout infrastructure repository
+        uses: actions/checkout@v4
+        with:
+          repository: 1ChristianAlex/motordesk-infrastructure
+          ref: main
+          path: infrastructure
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -247,18 +254,18 @@ jobs:
       - name: Install cluster add-ons with Helm
         if: inputs.confirm_apply
         shell: bash
-        run: bash infra/kubernetes/helm/install-addons.sh
+        run: bash infrastructure/kubernetes/helm/install-addons.sh
 
       - name: Install New Relic Kubernetes observability
         if: inputs.confirm_apply
         shell: bash
         env:
           NEW_RELIC_EKS_LICENSE_KEY: ${{ secrets.NEW_RELIC_EKS_LICENSE_KEY }}
-        run: bash infra/kubernetes/helm/install-newrelic.sh
+        run: bash infrastructure/kubernetes/helm/install-newrelic.sh
 
       - name: Apply Kubernetes YAML workloads
         if: inputs.confirm_apply
         shell: bash
         env:
           NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
-        run: bash infra/kubernetes/deploy-workloads.sh
+        run: bash infrastructure/kubernetes/deploy-workloads.sh

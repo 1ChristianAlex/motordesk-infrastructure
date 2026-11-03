@@ -2,6 +2,23 @@
 name: Terraform AWS Validation
 
 on:
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "kubernetes/**"
+      - ".github/scripts/**"
+      - ".github/workflows/deploy-eks.yml"
+      - ".github/workflows/terraform-aws.yml"
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "terraform/**"
+      - "kubernetes/**"
+      - ".github/scripts/**"
+      - ".github/workflows/deploy-eks.yml"
+      - ".github/workflows/terraform-aws.yml"
   workflow_call:
     inputs:
       environments:
@@ -34,61 +51,81 @@ permissions:
 jobs:
   validate-aws:
     runs-on: ubuntu-latest
+    env:
+      INFRASTRUCTURE_ROOT: ${{ github.repository == '1ChristianAlex/motordesk-infrastructure' && '.' || 'infrastructure' }}
     strategy:
       fail-fast: false
       matrix:
-        environment: ${{ fromJSON(inputs.environments) }}
+        environment: ${{ fromJSON(inputs.environments || '["dev", "qa", "prod"]') }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Checkout infrastructure repository
+        if: github.repository != '1ChristianAlex/motordesk-infrastructure'
+        uses: actions/checkout@v4
+        with:
+          repository: 1ChristianAlex/motordesk-infrastructure
+          ref: main
+          path: infrastructure
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ${{ inputs.terraform_version }}
+          terraform_version: ${{ inputs.terraform_version || '1.10.0' }}
 
       - name: Terraform Format
-        working-directory: infra/terraform/aws
+        working-directory: ${{ env.INFRASTRUCTURE_ROOT }}/terraform/aws
         run: terraform fmt -check -recursive
 
       - name: Terraform Init
-        working-directory: infra/terraform/aws/envs/${{ matrix.environment }}
+        working-directory: ${{ env.INFRASTRUCTURE_ROOT }}/terraform/aws/envs/${{ matrix.environment }}
         run: terraform init -backend=false -input=false
 
       - name: Terraform Validate
-        working-directory: infra/terraform/aws/envs/${{ matrix.environment }}
+        working-directory: ${{ env.INFRASTRUCTURE_ROOT }}/terraform/aws/envs/${{ matrix.environment }}
         run: terraform validate -no-color
 
   validate-kubernetes-manifests:
     runs-on: ubuntu-latest
+    env:
+      INFRASTRUCTURE_ROOT: ${{ github.repository == '1ChristianAlex/motordesk-infrastructure' && '.' || 'infrastructure' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout infrastructure repository
+        if: github.repository != '1ChristianAlex/motordesk-infrastructure'
+        uses: actions/checkout@v4
+        with:
+          repository: 1ChristianAlex/motordesk-infrastructure
+          ref: main
+          path: infrastructure
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: ${{ inputs.bun_version }}
+          bun-version: ${{ inputs.bun_version || 'latest' }}
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
         with:
-          version: ${{ inputs.helm_version }}
+          version: ${{ inputs.helm_version || 'v3.16.4' }}
 
       - name: Validate Kubernetes YAML and deployment scripts
         run: |
-          bun .github/scripts/validate-kubernetes-yaml.js
-          bash -n infra/kubernetes/deploy-workloads.sh
-          bash -n infra/kubernetes/helm/install-addons.sh
-          bash -n infra/kubernetes/helm/install-newrelic.sh
+          bun "$INFRASTRUCTURE_ROOT/.github/scripts/validate-kubernetes-yaml.js"
+          bash -n "$INFRASTRUCTURE_ROOT/kubernetes/deploy-workloads.sh"
+          bash -n "$INFRASTRUCTURE_ROOT/kubernetes/helm/install-addons.sh"
+          bash -n "$INFRASTRUCTURE_ROOT/kubernetes/helm/install-newrelic.sh"
 
       - name: Lint and render New Relic Helm chart
         shell: bash
         run: |
           set -euo pipefail
 
-          source infra/kubernetes/helm/versions.env
+          source "$INFRASTRUCTURE_ROOT/kubernetes/helm/versions.env"
 
           helm repo add newrelic https://helm-charts.newrelic.com
           helm repo update newrelic
@@ -101,12 +138,12 @@ jobs:
 
           helm lint "$bundle_chart" \
             --namespace newrelic \
-            --values infra/kubernetes/newrelic/values.yaml \
+            --values "$INFRASTRUCTURE_ROOT/kubernetes/newrelic/values.yaml" \
             --set-string global.cluster=validation-cluster
 
           helm template newrelic-kubernetes "$bundle_chart" \
             --namespace newrelic \
-            --values infra/kubernetes/newrelic/values.yaml \
+            --values "$INFRASTRUCTURE_ROOT/kubernetes/newrelic/values.yaml" \
             --set-string global.cluster=validation-cluster \
             > "$RUNNER_TEMP/newrelic-kubernetes.yaml"
 

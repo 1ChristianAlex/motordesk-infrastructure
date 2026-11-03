@@ -1,7 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const root = path.resolve("infra/kubernetes");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../kubernetes");
 
 async function findYamlFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
